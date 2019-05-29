@@ -1,4 +1,6 @@
 #!/bin/bash
 
+set -xeu
+
 GO111MODULE=on CGO_ENABLED=0 GOOS=linux go build -installsuffix cgo -o admission-webhook-example 
-docker build --no-cache -t kev/admission-webhook-example:v11 .
+docker build --no-cache -t kev/admission-webhook-example:v12 .
