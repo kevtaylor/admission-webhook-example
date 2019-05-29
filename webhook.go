@@ -174,9 +174,108 @@ func updateLabels(target map[string]string, added map[string]string) (patch []pa
 	return patch
 }
 
-func createPatch(availableAnnotations map[string]string, annotations map[string]string, availableLabels map[string]string, labels map[string]string) ([]byte, error) {
+func addSecretsVolume(deployment appsv1.Deployment) (patch []patchOperation) {
+
+	volume := corev1.Volume{
+		Name: "secrets",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
+		},
+	}
+
+	path := "/spec/template/spec/volumes"
+	var value interface{}
+
+	if len(deployment.Spec.Template.Spec.Volumes) != 0 {
+		path = path + "/-"
+		value = volume
+	} else {
+		value = []corev1.Volume{volume}
+	}
+
+	patch = append(patch, patchOperation{
+		Op:    "add",
+		Path:  path,
+		Value: value,
+	})
+
+	return patch
+}
+
+func addVolumeMount(deployment appsv1.Deployment) (patch []patchOperation) {
+
+	containers := deployment.Spec.Template.Spec.Containers
+
+	volumeMount := corev1.VolumeMount{
+		Name:      "secrets",
+		MountPath: "/secrets",
+	}
+
+	modifiedContainers := []corev1.Container{}
+
+	for _, container := range containers {
+		container.VolumeMounts = appendVolumeMountIfMissing(container.VolumeMounts, volumeMount)
+		modifiedContainers = append(modifiedContainers, container)
+	}
+
+	patch = append(patch, patchOperation{
+		Op:    "replace",
+		Path:  "/spec/template/spec/containers",
+		Value: modifiedContainers,
+	})
+
+	return patch
+}
+
+func appendVolumeMountIfMissing(slice []corev1.VolumeMount, v corev1.VolumeMount) []corev1.VolumeMount {
+	for _, ele := range slice {
+		if ele == v {
+			return slice
+		}
+	}
+	return append(slice, v)
+}
+
+func initContainers(deployment appsv1.Deployment) (patch []patchOperation) {
+	initContainers := []corev1.Container{}
+
+	initContainer := corev1.Container{
+		Image:   "busybox",
+		Name:    "secrets-injector",
+		Command: []string{"/bin/sh", "-ec", "echo Hello >/secrets/secret.txt"},
+		VolumeMounts: []corev1.VolumeMount{
+			corev1.VolumeMount{
+				Name:      "secrets",
+				MountPath: "/secrets",
+			},
+		},
+	}
+
+	initContainers = append(initContainers, initContainer)
+
+	var initOp string
+	if len(deployment.Spec.Template.Spec.InitContainers) != 0 {
+		initContainers = append(initContainers, deployment.Spec.Template.Spec.InitContainers...)
+		initOp = "replace"
+	} else {
+		initOp = "add"
+	}
+
+	patch = append(patch, patchOperation{
+		Op:    initOp,
+		Path:  "/spec/template/spec/initContainers",
+		Value: initContainers,
+	})
+
+	return patch
+}
+
+func createPatch(deployment appsv1.Deployment, availableAnnotations map[string]string, annotations map[string]string, availableLabels map[string]string, labels map[string]string) ([]byte, error) {
 	var patch []patchOperation
 
+	patch = append(patch, addSecretsVolume(deployment)...)
+	patch = append(patch, initContainers(deployment)...)
+	patch = append(patch, addVolumeMount(deployment)...)
 	patch = append(patch, updateAnnotation(availableAnnotations, annotations)...)
 	patch = append(patch, updateLabels(availableLabels, labels)...)
 
@@ -261,9 +360,9 @@ func (whsvr *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.Admissi
 	glog.Infof("AdmissionReview for Kind=%v, Namespace=%v Name=%v (%v) UID=%v patchOperation=%v UserInfo=%v",
 		req.Kind, req.Namespace, req.Name, resourceName, req.UID, req.Operation, req.UserInfo)
 
+	var deployment appsv1.Deployment
 	switch req.Kind.Kind {
 	case "Deployment":
-		var deployment appsv1.Deployment
 		if err := json.Unmarshal(req.Object.Raw, &deployment); err != nil {
 			glog.Errorf("Could not unmarshal raw object: %v", err)
 			return &v1beta1.AdmissionResponse{
@@ -273,6 +372,7 @@ func (whsvr *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.Admissi
 			}
 		}
 		resourceName, resourceNamespace, objectMeta = deployment.Name, deployment.Namespace, &deployment.ObjectMeta
+		glog.Infof("***** KEVIN ***** Deployment %+v", deployment)
 		availableLabels = deployment.Labels
 	case "Service":
 		var service corev1.Service
@@ -296,7 +396,7 @@ func (whsvr *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.Admissi
 	}
 
 	annotations := map[string]string{admissionWebhookAnnotationStatusKey: "mutated"}
-	patchBytes, err := createPatch(availableAnnotations, annotations, availableLabels, addLabels)
+	patchBytes, err := createPatch(deployment, availableAnnotations, annotations, availableLabels, addLabels)
 	if err != nil {
 		return &v1beta1.AdmissionResponse{
 			Result: &metav1.Status{
