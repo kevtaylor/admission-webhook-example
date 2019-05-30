@@ -9,7 +9,6 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/api/admission/v1beta1"
 	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,7 +55,7 @@ func init() {
 	_ = v1.AddToScheme(runtimeScheme)
 }
 
-func addSecretsVolume(deployment appsv1.Deployment) (patch []patchOperation) {
+func addSecretsVolume(pod corev1.Pod) (patch []patchOperation) {
 
 	volume := corev1.Volume{
 		Name: "secrets",
@@ -65,10 +64,10 @@ func addSecretsVolume(deployment appsv1.Deployment) (patch []patchOperation) {
 		},
 	}
 
-	path := "/spec/template/spec/volumes"
+	path := "/spec/volumes"
 	var value interface{}
 
-	if len(deployment.Spec.Template.Spec.Volumes) != 0 {
+	if len(pod.Spec.Volumes) != 0 {
 		path = path + "/-"
 		value = volume
 	} else {
@@ -84,9 +83,9 @@ func addSecretsVolume(deployment appsv1.Deployment) (patch []patchOperation) {
 	return patch
 }
 
-func addVolumeMount(deployment appsv1.Deployment) (patch []patchOperation) {
+func addVolumeMount(pod corev1.Pod) (patch []patchOperation) {
 
-	containers := deployment.Spec.Template.Spec.Containers
+	containers := pod.Spec.Containers
 
 	volumeMount := corev1.VolumeMount{
 		Name:      "secrets",
@@ -102,7 +101,7 @@ func addVolumeMount(deployment appsv1.Deployment) (patch []patchOperation) {
 
 	patch = append(patch, patchOperation{
 		Op:    "replace",
-		Path:  "/spec/template/spec/containers",
+		Path:  "/spec/containers",
 		Value: modifiedContainers,
 	})
 
@@ -118,7 +117,7 @@ func appendVolumeMountIfMissing(slice []corev1.VolumeMount, v corev1.VolumeMount
 	return append(slice, v)
 }
 
-func initContainers(deployment appsv1.Deployment) (patch []patchOperation) {
+func initContainers(pod corev1.Pod) (patch []patchOperation) {
 	initContainers := []corev1.Container{}
 
 	initContainer := corev1.Container{
@@ -136,8 +135,8 @@ func initContainers(deployment appsv1.Deployment) (patch []patchOperation) {
 	initContainers = append(initContainers, initContainer)
 
 	var initOp string
-	if len(deployment.Spec.Template.Spec.InitContainers) != 0 {
-		initContainers = append(initContainers, deployment.Spec.Template.Spec.InitContainers...)
+	if len(pod.Spec.InitContainers) != 0 {
+		initContainers = append(initContainers, pod.Spec.InitContainers...)
 		initOp = "replace"
 	} else {
 		initOp = "add"
@@ -145,19 +144,19 @@ func initContainers(deployment appsv1.Deployment) (patch []patchOperation) {
 
 	patch = append(patch, patchOperation{
 		Op:    initOp,
-		Path:  "/spec/template/spec/initContainers",
+		Path:  "/spec/initContainers",
 		Value: initContainers,
 	})
 
 	return patch
 }
 
-func createPatch(deployment appsv1.Deployment) ([]byte, error) {
+func createPatch(pod corev1.Pod) ([]byte, error) {
 	var patch []patchOperation
 
-	patch = append(patch, addSecretsVolume(deployment)...)
-	patch = append(patch, initContainers(deployment)...)
-	patch = append(patch, addVolumeMount(deployment)...)
+	patch = append(patch, addSecretsVolume(pod)...)
+	patch = append(patch, initContainers(pod)...)
+	patch = append(patch, addVolumeMount(pod)...)
 
 	return json.Marshal(patch)
 }
@@ -166,13 +165,13 @@ func createPatch(deployment appsv1.Deployment) ([]byte, error) {
 func (whsvr *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionResponse {
 	req := ar.Request
 
-	glog.Infof("AdmissionReview for Kind=%v, Namespace=%v Name=%v UID=%v patchOperation=%v UserInfo=%v",
-		req.Kind, req.Namespace, req.Name, req.UID, req.Operation, req.UserInfo)
+	glog.Infof("AdmissionReview for Kind=%v, Namespace=%v, UID=%v patchOperation=%v, UserInfo=%v",
+		req.Kind, req.Namespace, req.UID, req.Operation, req.UserInfo)
 
-	var deployment appsv1.Deployment
+	var pod corev1.Pod
 	switch req.Kind.Kind {
-	case "Deployment":
-		if err := json.Unmarshal(req.Object.Raw, &deployment); err != nil {
+	case "Pod":
+		if err := json.Unmarshal(req.Object.Raw, &pod); err != nil {
 			glog.Errorf("Could not unmarshal raw object: %v", err)
 			return &v1beta1.AdmissionResponse{
 				Result: &metav1.Status{
@@ -180,9 +179,9 @@ func (whsvr *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.Admissi
 				},
 			}
 		}
-		glog.Infof("***** KEVIN ***** Deployment %+v", deployment)
+		glog.Infof("Discovered Pod Definition: %+v", pod)
 
-		patchBytes, err := createPatch(deployment)
+		patchBytes, err := createPatch(pod)
 		if err != nil {
 			return &v1beta1.AdmissionResponse{
 				Result: &metav1.Status{
