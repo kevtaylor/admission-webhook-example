@@ -1,9 +1,12 @@
 ## Creates webhook
-`./deployment/webhook-patch-ca-bundle.sh <mutatingwebhook.yaml | kubectl apply -f -` 
+`./deployment/webhook-patch-ca-bundle.sh <./deployment/mutatingwebhook.yaml | kubectl apply -f -` 
 ## Creates secrets
 `./deployment/webhook-create-signed-cert.sh` 
 ## Builds binary and tags to kev/x:v10
 `./build` 
+## Label namespace
+`kubectl label namespace default admission-webhook-example=enabled`
+## Load manifests from `./deployment`
 1. Load serviceaccount
 2. Load clusterrole
 3. Load clusterrolebinding
@@ -11,6 +14,7 @@
 5. Change image in deployment to be `kev/x:v10`
 6. Change ImagePullPolicy to be Never
 7. Load deployment
+## Test deployment
 `kubectl create -f deployment/sleep.yaml`
 
 Should add `initContainer` and `volume` and `volumeMounts`
